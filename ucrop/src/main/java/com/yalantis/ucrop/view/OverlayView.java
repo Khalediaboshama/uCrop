@@ -12,17 +12,17 @@ import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.View;
 
+import androidx.annotation.ColorInt;
+import androidx.annotation.IntDef;
+import androidx.annotation.IntRange;
+import androidx.annotation.NonNull;
+
 import com.yalantis.ucrop.R;
 import com.yalantis.ucrop.callback.OverlayViewChangeListener;
 import com.yalantis.ucrop.util.RectUtils;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-
-import androidx.annotation.ColorInt;
-import androidx.annotation.IntDef;
-import androidx.annotation.IntRange;
-import androidx.annotation.NonNull;
 
 /**
  * Created by Oleksii Shliama (https://github.com/shliama).
@@ -72,6 +72,9 @@ public class OverlayView extends View {
     private OverlayViewChangeListener mCallback;
 
     private boolean mShouldSetupCropBounds;
+    private boolean mShouldSetupCustomCropBounds;
+    private boolean mHasCustomCropBounds;
+    private float mPendingCropX, mPendingCropY, mPendingCropWidth, mPendingCropHeight;
 
     {
         mTouchPointThreshold = getResources().getDimensionPixelSize(R.dimen.ucrop_default_crop_rect_corner_touch_threshold);
@@ -229,6 +232,10 @@ public class OverlayView extends View {
         mTargetAspectRatio = targetAspectRatio;
         if (mThisWidth > 0) {
             setupCropBounds();
+            // Re-apply custom rect immediately if set — overrides the aspect-ratio-based bounds
+            if (mHasCustomCropBounds) {
+                applyCustomCropBounds(mPendingCropX, mPendingCropY, mPendingCropWidth, mPendingCropHeight);
+            }
             postInvalidate();
         } else {
             mShouldSetupCropBounds = true;
@@ -257,6 +264,45 @@ public class OverlayView extends View {
         }
 
         updateGridPoints();
+    }
+
+    /**
+     * Sets the crop rectangle from user-supplied coordinates (view-space pixels).
+     * If the view has not been laid out yet, the call is deferred until {@link #onLayout}.
+     *
+     * @param x      left edge of the desired crop rect
+     * @param y      top edge of the desired crop rect
+     * @param width  desired width  (must be > 0)
+     * @param height desired height (must be > 0)
+     */
+    public void setCropRect(float x, float y, float width, float height) {
+        mPendingCropX = x;
+        mPendingCropY = y;
+        mPendingCropWidth = width;
+        mPendingCropHeight = height;
+        mHasCustomCropBounds = true;
+        if (mThisWidth > 0) {
+            applyCustomCropBounds(x, y, width, height);
+        } else {
+            mShouldSetupCustomCropBounds = true;
+        }
+    }
+
+    private void applyCustomCropBounds(float x, float y, float width, float height) {
+        float maxRight  = mThisWidth  - getPaddingRight();
+        float maxBottom = mThisHeight - getPaddingBottom();
+
+        x = Math.max(getPaddingLeft(), x);
+        y = Math.max(getPaddingTop(),  y);
+        width  = Math.max(mCropRectMinSize, Math.min(width,  maxRight  - x));
+        height = Math.max(mCropRectMinSize, Math.min(height, maxBottom - y));
+
+        mCropViewRect.set(x, y, x + width, y + height);
+        updateGridPoints();
+        postInvalidate();
+        if (mCallback != null) {
+            mCallback.onCropRectUpdated(mCropViewRect);
+        }
     }
 
     private void updateGridPoints() {
@@ -289,6 +335,13 @@ public class OverlayView extends View {
             if (mShouldSetupCropBounds) {
                 mShouldSetupCropBounds = false;
                 setTargetAspectRatio(mTargetAspectRatio);
+            }
+            // Custom rect always runs after (and overrides) the aspect-ratio bounds.
+            // mShouldSetupCustomCropBounds handles the first deferred call;
+            // mHasCustomCropBounds re-applies on every subsequent layout (e.g. after image load).
+            if (mShouldSetupCustomCropBounds || mHasCustomCropBounds) {
+                mShouldSetupCustomCropBounds = false;
+                applyCustomCropBounds(mPendingCropX, mPendingCropY, mPendingCropWidth, mPendingCropHeight);
             }
         }
     }
